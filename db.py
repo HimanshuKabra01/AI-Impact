@@ -1,41 +1,68 @@
 from pymongo import MongoClient
+from pymongo.errors import ServerSelectionTimeoutError
 import os
 from datetime import datetime
 from dotenv import load_dotenv
 
-MONGO_URI = os.getenv("MONGO_URI")
-if not MONGO_URI:
-  raise ValueError("URI not found in env") 
+load_dotenv()
 
-client = MongoClient(MONGO_URI)
-db = client["honeypot_db"]
-sessions = db["sessions"]
+MONGO_URI = os.getenv("MONGO_URI")
+
+try:
+    client = MongoClient(
+        MONGO_URI, 
+        tlsAllowInvalidCertificates=True, 
+        serverSelectionTimeoutMS=9000,
+        connectTimeoutMS=9000
+    )
+    db = client["honeypot_db"]
+    sessions = db["sessions"]
+    client.admin.command('ismaster')
+    print("MongoDB Connected Successfully")
+except Exception as e:
+    print(f"MongoDB Connection Failed: {e}")
+    sessions = None
 
 def update_session(session_id, user_text, ai_reply, intel, scam_analysis):
-  sessions.update_one(
-    {"session_id": session_id},
-    {
-      "$inc": {"msg_count": 2},
-      "$push": {
-        "history": {
-          "$each": [
-            {"role": "scammer", "content": user_text},
-            {"role": "agent", "content": ai_reply}
-          ]
+  if sessions is None:
+      print("DB not available, skipping save.")
+      return
+
+  try:
+      sessions.update_one(
+        {"session_id": session_id},
+        {
+          "$inc": {"msg_count": 2},
+          "$push": {
+            "history": {
+              "$each": [
+                {"role": "scammer", "content": user_text},
+                {"role": "agent", "content": ai_reply}
+              ]
+            },
+            "extracted_intel": intel,
+            "keywords_found": {"$each": scam_analysis["keywords"]}
+          },
+          "$set": {
+            "last_active": datetime.utcnow(),
+            "scam_detected": scam_analysis["is_scam"]
+          }
         },
-        "extracted_intel": intel,
-        "keywords_found": {"$each": scam_analysis["keywords"]}
-      },
-      "$set": {
-        "last_active": datetime.utcnow(),
-        "scam_detected": scam_analysis["is_scam"]
-      }
-    },
-    upsert=True
-  )
+        upsert=True
+      )
+  except Exception as e:
+    print(f"DB Write Error: {e}")
 
 def get_session_data(session_id):
-  return sessions.find_one({"session_id": session_id})
+  if sessions is None: return {}
+  try:
+    return sessions.find_one({"session_id": session_id})
+  except:
+    return {}
 
 def get_all_logs():
-  return list(sessions.find({}, {"_id": 0}).sort("last_active", -1))
+  if sessions is None: return []
+  try:
+    return list(sessions.find({}, {"_id": 0}).sort("last_active", -1))
+  except:
+    return []
