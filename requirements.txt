@@ -4,3 +4,4 @@ groq
 pymongo
 pydantic
 python-dotenv
+requests
